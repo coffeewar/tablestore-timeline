@@ -16,7 +16,6 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * 基于表格存储（Table Store）的分布式存储层实现.
@@ -31,7 +30,8 @@ public class DistributeTimelineStore implements IStore {
 
     /**
      * TableStoreStore的构造函数。
-     * @param config    TableStore的配置参数。
+     *
+     * @param config TableStore的配置参数。
      */
     public DistributeTimelineStore(DistributeTimelineConfig config) {
         this.config = config;
@@ -55,8 +55,48 @@ public class DistributeTimelineStore implements IStore {
 
     @Override
     public void batch(String timelineID, IMessage message) {
+        initTableStoreWriter();
+        tableStoreWriter.addRowChange(createPutRowRequest(timelineID, message).getRowChange());
+    }
+
+    @Override
+    public boolean delete(String timelineID, Long sequenceID) {
+        try {
+            Future<Boolean> res = deleteAsync(timelineID, sequenceID, null);
+            return Utils.waitForFuture(res);
+        } catch (TableStoreException ex) {
+            throw handleTableStoreException(ex, timelineID, "delete");
+        } catch (ClientException ex) {
+            throw new TimelineException(TimelineExceptionType.INVALID_USE,
+                    "Parameter is invalid, reason:" + ex.getMessage(), ex);
+        }
+    }
+
+    @Override
+    public Future<Boolean> deleteAsync(final String timelineID,
+                                       final Long sequenceID,
+                                       final TimelineCallback<Long> callback) {
+        try {
+            DeleteRowRequest request = createDeleteRowRequest(timelineID, sequenceID);
+            return doDeleteAsync(timelineID, callback, request);
+        } catch (TableStoreException ex) {
+            throw handleTableStoreException(ex, timelineID, "delete");
+        } catch (ClientException ex) {
+            throw new TimelineException(TimelineExceptionType.INVALID_USE,
+                    "Parameter is invalid, reason:" + ex.getMessage(), ex);
+        }
+    }
+
+    @Override
+    public void batchDelete(String timelineID, Long sequenceID) {
+        initTableStoreWriter();
+
+        tableStoreWriter.addRowChange(createDeleteRowRequest(timelineID, sequenceID).getRowChange());
+    }
+
+    public void initTableStoreWriter() {
         if (tableStoreWriter == null) {
-            synchronized(this) {
+            synchronized (this) {
                 if (tableStoreWriter == null) {
                     ExecutorService executor = Executors.newFixedThreadPool(config.getClientConfiguration().getIoThreadCount());
                     tableStoreWriter = new DefaultTableStoreWriter(tableStore, config.getTableName(),
@@ -64,7 +104,6 @@ public class DistributeTimelineStore implements IStore {
                 }
             }
         }
-        tableStoreWriter.addRowChange(createPutRowRequest(timelineID, message).getRowChange());
     }
 
     @Override
@@ -85,8 +124,7 @@ public class DistributeTimelineStore implements IStore {
     @Override
     public TimelineEntry update(String timelineID,
                                 Long sequenceID,
-                                IMessage message)
-    {
+                                IMessage message) {
         try {
             Future<TimelineEntry> res = updateAsync(timelineID, sequenceID, message, null);
             return Utils.waitForFuture(res);
@@ -102,8 +140,7 @@ public class DistributeTimelineStore implements IStore {
     public Future<TimelineEntry> updateAsync(String timelineID,
                                              Long sequenceID,
                                              IMessage message,
-                                             TimelineCallback<IMessage> callback)
-    {
+                                             TimelineCallback<IMessage> callback) {
         try {
             UpdateRowRequest request = createUpdateRowRequest(timelineID, sequenceID, message);
             return doUpdateAsync(timelineID, message, callback, request);
@@ -249,6 +286,13 @@ public class DistributeTimelineStore implements IStore {
         tableStore.shutdown();
     }
 
+    @Override
+    public void flush() {
+        if (tableStoreWriter != null) {
+            tableStoreWriter.flush();
+        }
+    }
+
     private RangeIteratorParameter createIteratorParameter(String timelineID, ScanParameter parameter) {
         RangeIteratorParameter iteratorParameter = new RangeIteratorParameter(config.getTableName());
         iteratorParameter.setDirection(parameter.isForward() ? Direction.FORWARD : Direction.BACKWARD);
@@ -273,6 +317,17 @@ public class DistributeTimelineStore implements IStore {
         }
 
         return iteratorParameter;
+    }
+
+    private DeleteRowRequest createDeleteRowRequest(String timelineID, Long sequenceID) {
+        RowDeleteChange delChange = new RowDeleteChange(config.getTableName());
+
+        PrimaryKeyColumn firstPK = new PrimaryKeyColumn(config.getFirstPKName(), PrimaryKeyValue.fromString(timelineID));
+        PrimaryKeyColumn secondPK = new PrimaryKeyColumn(config.getSecondPKName(), PrimaryKeyValue.fromLong(sequenceID));
+        delChange.setPrimaryKey(PrimaryKeyBuilder.createPrimaryKeyBuilder().
+                addPrimaryKeyColumn(firstPK).addPrimaryKeyColumn(secondPK).build());
+
+        return new DeleteRowRequest(delChange);
     }
 
     private PutRowRequest createPutRowRequest(String timelineID, IMessage message) {
@@ -335,8 +390,7 @@ public class DistributeTimelineStore implements IStore {
          */
         Map<String, String> attributes = message.getAttributes();
         for (String key : attributes.keySet()) {
-            if (key.startsWith(Utils.SYSTEM_COLUMN_NAME_PREFIX))
-            {
+            if (key.startsWith(Utils.SYSTEM_COLUMN_NAME_PREFIX)) {
                 throw new TimelineException(TimelineExceptionType.INVALID_USE,
                         String.format("Attribute name:%s can not start with %s", key, Utils.SYSTEM_COLUMN_NAME_PREFIX));
             }
@@ -407,8 +461,7 @@ public class DistributeTimelineStore implements IStore {
          */
         Map<String, String> attributes = message.getAttributes();
         for (String key : attributes.keySet()) {
-            if (key.startsWith(Utils.SYSTEM_COLUMN_NAME_PREFIX))
-            {
+            if (key.startsWith(Utils.SYSTEM_COLUMN_NAME_PREFIX)) {
                 throw new TimelineException(TimelineExceptionType.INVALID_USE,
                         String.format("Attribute name:%s can not start with %s", key, Utils.SYSTEM_COLUMN_NAME_PREFIX));
             }
@@ -496,12 +549,75 @@ public class DistributeTimelineStore implements IStore {
         };
     }
 
+    private Future<Boolean> doDeleteAsync(final String timelineID,
+                                          final TimelineCallback<Long> callback,
+                                          DeleteRowRequest request) {
+        final TableStoreCallback<DeleteRowRequest, DeleteRowResponse> tableStoreCallback = callback == null ? null : new TableStoreCallback<DeleteRowRequest, DeleteRowResponse>() {
+            @Override
+            public void onCompleted(DeleteRowRequest req, DeleteRowResponse res) {
+                long sequenceID = res.getRow().getPrimaryKey().getPrimaryKeyColumn(config.getSecondPKName()).getValue().asLong();
+                callback.onCompleted(timelineID, sequenceID, null);
+            }
+
+            @Override
+            public void onFailed(DeleteRowRequest req, Exception ex) {
+                ex = createException(ex, timelineID, "delete");
+                long sequenceID = req.getRowChange().getPrimaryKey().getPrimaryKeyColumn(config.getSecondPKName()).getValue().asLong();
+                callback.onFailed(timelineID, sequenceID, ex);
+            }
+        };
+
+        final Future<DeleteRowResponse> future = tableStore.deleteRow(request, tableStoreCallback);
+
+        return new Future<Boolean>() {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                return future.cancel(mayInterruptIfRunning);
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return future.isCancelled();
+            }
+
+            @Override
+            public boolean isDone() {
+                return future.isDone();
+            }
+
+            @Override
+            public Boolean get() throws InterruptedException, ExecutionException {
+                try {
+                    future.get();
+                    return true;
+                } catch (TableStoreException ex) {
+                    throw handleTableStoreException(ex, timelineID, "delete");
+                } catch (ClientException ex) {
+                    throw new TimelineException(TimelineExceptionType.INVALID_USE,
+                            "Drop store failed, reason:" + ex.getMessage(), ex);
+                }
+            }
+
+            @Override
+            public Boolean get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+                try {
+                    future.get(timeout, unit);
+                    return true;
+                } catch (TableStoreException ex) {
+                    throw handleTableStoreException(ex, timelineID, "delete");
+                } catch (ClientException ex) {
+                    throw new TimelineException(TimelineExceptionType.INVALID_USE,
+                            "Drop store failed, reason:" + ex.getMessage(), ex);
+                }
+            }
+        };
+    }
+
     private Future<TimelineEntry> doWriteAsync(final String timelineID,
                                                final IMessage message,
                                                final TimelineCallback<IMessage> callback,
-                                               PutRowRequest request)
-    {
-        final TableStoreCallback<PutRowRequest, PutRowResponse> tablestoreCallback = new TableStoreCallback<PutRowRequest, PutRowResponse>() {
+                                               PutRowRequest request) {
+        final TableStoreCallback<PutRowRequest, PutRowResponse> tablestoreCallback = callback == null ? null : new TableStoreCallback<PutRowRequest, PutRowResponse>() {
             @Override
             public void onCompleted(PutRowRequest request, PutRowResponse response) {
                 long sequenceID = response.getRow().getPrimaryKey().getPrimaryKeyColumn(config.getSecondPKName()).getValue().asLong();
@@ -565,8 +681,7 @@ public class DistributeTimelineStore implements IStore {
     private Future<TimelineEntry> doUpdateAsync(final String timelineID,
                                                 final IMessage message,
                                                 final TimelineCallback<IMessage> callback,
-                                                UpdateRowRequest request)
-    {
+                                                UpdateRowRequest request) {
         final TableStoreCallback<UpdateRowRequest, UpdateRowResponse> tablestoreCallback = new TableStoreCallback<UpdateRowRequest, UpdateRowResponse>() {
             @Override
             public void onCompleted(UpdateRowRequest request, UpdateRowResponse response) {
@@ -646,7 +761,7 @@ public class DistributeTimelineStore implements IStore {
 
     private Exception createException(Exception e, String timelineID, String type) {
         if (e instanceof TableStoreException) {
-            TableStoreException ex = (TableStoreException)e;
+            TableStoreException ex = (TableStoreException) e;
             if (ex.getErrorCode().equals("OTSObjectNotExist")) {
                 e = new TimelineException(TimelineExceptionType.INVALID_USE,
                         "Store is not create, please create before " + type);
@@ -658,7 +773,7 @@ public class DistributeTimelineStore implements IStore {
                         "Store occur some error,can retry, reason:" + ex.getMessage(), ex);
             } else {
                 e = new TimelineException(TimelineExceptionType.UNKNOWN,
-                        String.format("%s timeline %s failed, reason:%s.",type, timelineID, ex.toString()), ex);
+                        String.format("%s timeline %s failed, reason:%s.", type, timelineID, ex.toString()), ex);
             }
         } else if (e instanceof ClientException) {
             e = new TimelineException(TimelineExceptionType.INVALID_USE,

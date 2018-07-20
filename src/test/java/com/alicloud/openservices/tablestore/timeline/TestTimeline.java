@@ -38,6 +38,21 @@ public class TestTimeline {
         }
 
         @Override
+        public boolean delete(String timelineID, Long sequenceID) {
+            return false;
+        }
+
+        @Override
+        public Future<Boolean> deleteAsync(String timelineID, Long sequenceID, TimelineCallback<Long> callback) {
+            return null;
+        }
+
+        @Override
+        public void batchDelete(String timelineID, Long sequenceID) {
+
+        }
+
+        @Override
         public Future<TimelineEntry> writeAsync(String timelineID, IMessage message, TimelineCallback<IMessage> callback) {
             this.timelineID = timelineID;
             this.message = message;
@@ -99,6 +114,11 @@ public class TestTimeline {
 
         @Override
         public void close() {
+        }
+
+        @Override
+        public void flush() {
+
         }
     }
 

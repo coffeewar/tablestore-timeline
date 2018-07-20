@@ -30,8 +30,9 @@ public class Timeline {
 
     /**
      * Timeline的构造函数。
-     * @param timelineID    此Timeline对应的ID。
-     * @param store         此Timeline关联的Store，一般为存储Store或同步Store。
+     *
+     * @param timelineID 此Timeline对应的ID。
+     * @param store      此Timeline关联的Store，一般为存储Store或同步Store。
      */
     public Timeline(String timelineID, IStore store) {
         if (timelineID == null || timelineID.isEmpty()) {
@@ -50,8 +51,9 @@ public class Timeline {
 
     /**
      * 写入一个消息到此Timeline中。
-     * @param message   消息对象，需实现IMessage接口。
-     * @return          完整的TimelineEntry，包括消息和顺序ID。
+     *
+     * @param message 消息对象，需实现IMessage接口。
+     * @return 完整的TimelineEntry，包括消息和顺序ID。
      */
     public TimelineEntry store(IMessage message) {
         if (message == null) {
@@ -64,9 +66,10 @@ public class Timeline {
 
     /**
      * 异步写入消息接口。
-     * @param message     消息对象，需实现IMessage接口。
-     * @param callback    回调函数。
-     * @return            Future对象。
+     *
+     * @param message  消息对象，需实现IMessage接口。
+     * @param callback 回调函数。
+     * @return Future对象。
      */
     public Future<TimelineEntry> storeAsync(IMessage message, TimelineCallback<IMessage> callback) {
         if (message == null) {
@@ -81,6 +84,7 @@ public class Timeline {
      * 批量写入消息接口。
      * 此接口只是把消息加入到本地的一个buffer中，当buffer满或者超时（默认10s，可配置）才会统一写入。
      * 此接口返回时并不一定消息已经写入成功。
+     *
      * @param message 消息对象，需实现IMessage接口。
      */
     public void batch(IMessage message) {
@@ -93,10 +97,34 @@ public class Timeline {
     }
 
     /**
+     * 批量刪除消息接口
+     *
+     * @param sequenceID 消息顺序ID，和TimelineID一起唯一确定一条消息。
+     */
+    public void batchDelete(Long sequenceID) {
+        if (sequenceID == null) {
+            throw new TimelineException(TimelineExceptionType.INVALID_USE,
+                    "store parameter sequenceID is null");
+        }
+
+        this.store.batchDelete(this.timelineID, sequenceID);
+    }
+
+    public void delete(Long sequenceID) {
+        if (sequenceID == null) {
+            throw new TimelineException(TimelineExceptionType.INVALID_USE,
+                    "delete parameter sequenceID is null");
+        }
+
+        this.store.delete(timelineID, sequenceID);
+    }
+
+    /**
      * 同步更新消息。
-     * @param sequenceID  消息顺序ID，和TimelineID一起唯一确定一条消息。
-     * @param message     消息对象，需实现IMessage接口。
-     * @return            完整的TimelineEntry，包括消息和顺序ID。
+     *
+     * @param sequenceID 消息顺序ID，和TimelineID一起唯一确定一条消息。
+     * @param message    消息对象，需实现IMessage接口。
+     * @return 完整的TimelineEntry，包括消息和顺序ID。
      */
     public TimelineEntry update(Long sequenceID, IMessage message) {
         if (message == null) {
@@ -114,10 +142,11 @@ public class Timeline {
 
     /**
      * 异步更新消息接口。
-     * @param sequenceID  消息顺序ID，和TimelineID一起唯一确定一条消息。
-     * @param message     消息对象，需实现IMessage接口。
-     * @param callback    回调函数。
-     * @return            Future对象。
+     *
+     * @param sequenceID 消息顺序ID，和TimelineID一起唯一确定一条消息。
+     * @param message    消息对象，需实现IMessage接口。
+     * @param callback   回调函数。
+     * @return Future对象。
      */
     public Future<TimelineEntry> updateAsync(Long sequenceID, IMessage message, TimelineCallback<IMessage> callback) {
         if (message == null) {
@@ -135,8 +164,9 @@ public class Timeline {
 
     /**
      * 同步读取接口，通过制定一个唯一的顺序ID读取目标TimelineEntry。
-     * @param sequenceID    顺序ID。
-     * @return              完整的TimelineEntry，包括消息和顺序ID。
+     *
+     * @param sequenceID 顺序ID。
+     * @return 完整的TimelineEntry，包括消息和顺序ID。
      */
     public TimelineEntry get(Long sequenceID) {
         if (sequenceID == null) {
@@ -149,9 +179,10 @@ public class Timeline {
 
     /**
      * 异步读取接口，通过制定一个唯一的顺序ID读取目标TimelineEntry。
-     * @param sequenceID    顺序ID。
-     * @param callback      读取结束后的回调函数。
-     * @return              Future对象。
+     *
+     * @param sequenceID 顺序ID。
+     * @param callback   读取结束后的回调函数。
+     * @return Future对象。
      */
     public Future<TimelineEntry> getAsync(Long sequenceID, TimelineCallback<Long> callback) {
         if (sequenceID == null) {
@@ -164,8 +195,9 @@ public class Timeline {
 
     /**
      * 顺序读取一段范围内或固定数目的消息，支持逆序，正序。
-     * @param parameter     顺序读取的参数，包括方向、from、to和maxCount。
-     * @return              TimelineEntry的迭代器，通过迭代器可以遍历到待读取的所有消息。
+     *
+     * @param parameter 顺序读取的参数，包括方向、from、to和maxCount。
+     * @return TimelineEntry的迭代器，通过迭代器可以遍历到待读取的所有消息。
      */
     public Iterator<TimelineEntry> scan(ScanParameter parameter) {
         if (parameter == null) {
@@ -174,5 +206,9 @@ public class Timeline {
         }
 
         return this.store.scan(this.timelineID, parameter);
+    }
+
+    public void flush() {
+        this.store.flush();
     }
 }
